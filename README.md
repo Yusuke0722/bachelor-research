@@ -1,4 +1,4 @@
-# research
+# Research
 
 ## Simple system using Proof of Work
 
