@@ -13,7 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const lambda, Lambda, maxStep = 10, 60, 180
+const lambda, Lambda, maxStep, maxProposer = 10, 60, 180, 10
 
 type Block struct {
 	Round    int    `json:"round"`
@@ -82,6 +82,10 @@ func createSign(round int, step int, seed string) Sign {
 }
 
 func newBlock(round int, prevHash []byte, seed string, data string) (Block, bool) {
+	if len(MESSAGES) >= maxProposer {
+		log.Printf("info: you are not a selected user")
+		return Block{}, false // invalid block
+	}
 	block := Block{
 		round,
 		prevHash,
