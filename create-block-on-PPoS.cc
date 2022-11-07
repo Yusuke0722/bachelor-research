@@ -1,8 +1,8 @@
 /*
- * create-block-on-PPoS.cc
+ * create-block-on-PoW.cc
  *
- *  Created on: Oct 30, 2022
- *      Author: yusuk
+ *  Created on: Nov 6, 2022
+ *      Author: ysk722
  */
 
 #include <omnetpp.h>
@@ -13,7 +13,9 @@ using namespace omnetpp;
 class Create: public cSimpleModule {
 private:
     cHistogram createTime;
+    simtime_t miningTime;
     simtime_t remainingTime;
+    int gate_size;
 protected:
     void initialize() override;
     void handleMessage(cMessage *msg) override;
@@ -24,24 +26,35 @@ protected:
 Define_Module(Create);
 
 void Create::initialize() {
+    gate_size = gateSize("gate");
     scheduleAt(simTime(), new cMessage("create"));
 }
 
 void Create::handleMessage(cMessage *msg) {
-    mineBlock();
+    if (strcmp(msg->getName(), "create") == 0) {
+        mineBlock();
+    } else if (strcmp(msg->getName(), "find") == 0) {
+        createTime.collect(simTime() - miningTime);
+        miningTime = simTime();
+    } else {
+        scheduleAt(simTime(), new cMessage("create"));
+        if (miningTime == msg->getCreationTime()) {
+            createTime.collect(simTime() - miningTime);
+            for (int i = 0; i < gate_size; i++) {
+                send(new cMessage("find"), "gate$o", i);
+            }
+        }
+    }
 }
 
 void Create::mineBlock() {
-    cMessage *msg = new cMessage("");
-    msg->setTimestamp(simTime());
-    if (rand() % 2 == 0) {
+    miningTime = simTime();
+    if (rand() % 1000 < 591) {
         remainingTime = par("creationTime1");
     } else {
         remainingTime = par("creationTime2");
     }
-    createTime.collect(simTime() + remainingTime - msg->getCreationTime());
-    scheduleAt(simTime() + remainingTime, new cMessage("create"));
-    delete msg;
+    scheduleAt(simTime() + remainingTime, new cMessage(""));
 }
 
 void Create::finish() {
