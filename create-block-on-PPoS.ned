@@ -21,13 +21,19 @@ package create_block_on_ppos;
 network Create_block_on_PPoS
 {
     types:
+        channel Channel extends ned.DelayChannel {
+            delay = 100ms;
+        }
         simple Create
         {
-            parameters:
-                volatile double creationTime1 @unit(s) = triang(4s, 10s, 30.4s);
-                volatile double creationTime2 @unit(s) = triang(30.4s, 55s, 80s);
+            gates:
+                inout gate[];
         }
 
     submodules:
-        Creator: Create;
+        Creator[5]: Create;
+    connections:
+        for i=0..sizeof(Creator)-1, for j=0..sizeof(Creator)-1 {
+            Creator[i].gate++ <--> Channel <--> Creator[j].gate++ if i<j;
+        }
 }
