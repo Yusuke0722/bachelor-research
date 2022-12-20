@@ -15,27 +15,33 @@
 
 package create_block_on_pow;
 
+import inet.node.ethernet.EthernetLink;
+import inet.node.ethernet.Eth100M;
+
 //
 // TODO auto-generated type
 //
 network Create_block_on_PoW
 {
     types:
-        channel Channel extends ned.DelayChannel {
-            delay = 100ms;
+        channel Lpwa extends EthernetLink {
+            datarate = 50kbps;
         }
         simple Create
         {
             parameters:
-                volatile double creationTime @unit(s) = gamma_d(1.10, 34.12s);
+                volatile double creationTime @unit(s) = gamma_d(1, 200s);
+                //volatile double creationTime @unit(s) = gamma_d(1.10, 34.12s);
             gates:
                 inout gate[];
         }
 
     submodules:
-        Creator[100]: Create;
+        Creator[10]: Create;
     connections:
         for i=0..sizeof(Creator)-1, for j=0..sizeof(Creator)-1 {
-            Creator[i].gate++ <--> Channel <--> Creator[j].gate++ if i<j;
+            Creator[i].gate++ <--> Lpwa <--> Creator[j].gate++ if i<j;
+            //Creator[i].gate++ <--> Eth100M <--> Creator[j].gate++ if i<j;
+            //Creator[i].gate++ <--> Creator[j].gate++ if i<j;
         }
 }

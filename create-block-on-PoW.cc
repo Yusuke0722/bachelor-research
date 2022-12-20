@@ -1,22 +1,42 @@
 /*
  * create-block-on-PoW.cc
  *
- *  Created on: Oct 30, 2022
- *      Author: yusuk
+ *  Created on: Nov 6, 2022
+ *      Author: ysk722
  */
 
+#include <string>
 #include <omnetpp.h>
+#include <nlohmann/json.hpp>
+#include "sha-256.h"
 
+#define BUFFER_MAX 4096
+
+using namespace std;
+using json = nlohmann::json;
 
 using namespace omnetpp;
+
+struct block {
+    uint32_t contents_length;
+    uint8_t contents_hash[32];
+    uint8_t previous_hash[32];
+    uint32_t timestamp;
+};
 
 class Create: public cSimpleModule {
 private:
     cHistogram createTime;
     simtime_t miningTime;
+    simtime_t addingTime;
+    uint32_t chainLen;
+    uint32_t messageNum;
+    uint32_t forkNum;
     int gate_size;
+    block newBlock;
 protected:
     void initialize() override;
+    void send_to_all(const string name);
     void handleMessage(cMessage *msg) override;
     void mineBlock();
     void finish() override;
@@ -25,33 +45,80 @@ protected:
 Define_Module(Create);
 
 void Create::initialize() {
+    chainLen = 0;
+    messageNum = 0;
+    forkNum = 0;
     gate_size = gateSize("gate");
+    addingTime = simTime();
     scheduleAt(simTime(), new cMessage("create"));
 }
 
-void Create::handleMessage(cMessage *msg) {
+void Create::send_to_all(const string name) {
+    for (int i = 0; i < gate_size; i++) {
+        cPacket *msg = new cMessage(name.c_str());
+        msg->setByteLength(200);
+        send(msg, "gate$o", i);
+        //send(new cMessage(name.c_str()), "gate$o", i);
+    }
+}
+
+void Create::handleMessage(cPacket *msg) {
+    if (!(msg->isSelfMessage())) { messageNum++; }
     if (strcmp(msg->getName(), "create") == 0) {
         mineBlock();
-    } else if (strcmp(msg->getName(), "find") == 0) {
-        createTime.collect(simTime() - miningTime);
-        miningTime = simTime();
-    } else {
-        scheduleAt(simTime(), new cMessage("create"));
+    } else if (strcmp(msg->getName(), "finish") == 0) {
+        //scheduleAt(simTime(), new cMessage("create"));
         if (miningTime == msg->getCreationTime()) {
-            createTime.collect(simTime() - miningTime);
-            for (int i = 0; i < gate_size; i++) {
-                send(new cMessage("find"), "gate$o", i);
-            }
+            scheduleAt(simTime(), new cMessage("create"));
+            createTime.collect(simTime() - addingTime);
+            json j = {{"round", chainLen},
+                    {"block", {"prev_hash", newBlock.previous_hash}}};
+            send_to_all(j.dump());
+            addingTime = simTime();
+            chainLen++;
         }
+    } else {
+        json m = json::parse(string(msg->getName()));
+        int r = int(m["round"]);
+        if (r != chainLen || getId() % 10 == 9) { forkNum++; return; }
+        EV << "size: " << msg->getByteLength() << endl;
+        scheduleAt(simTime(), new cMessage("create"));
+        createTime.collect(simTime() - addingTime);
+        addingTime = simTime();
+        chainLen++;
     }
+}
+
+block buildBlock(const block *previous, const char *contents, uint64_t length) {
+    block header;
+    header.contents_length = length;
+    if (previous) {
+        /* calculate previous block header hash */
+        calc_sha_256(header.previous_hash, previous, sizeof(block));
+    } else {
+        /* genesis has no previous. just use zeroed hash */
+        memset(header.previous_hash, 0, sizeof(header.previous_hash));
+    }
+    /* add data hash */
+    calc_sha_256(header.contents_hash, contents, length);
+    return header;
 }
 
 void Create::mineBlock() {
     miningTime = simTime();
-    scheduleAt(simTime() + par("creationTime"), new cMessage(""));
+    char line_buffer[BUFFER_MAX] = "first";
+    uint64_t size = strnlen(line_buffer, BUFFER_MAX) + 1;
+
+    block *previous_ptr = NULL;
+    newBlock = buildBlock(previous_ptr, line_buffer, size);
+    newBlock.timestamp = (uint64_t)time(NULL);
+    scheduleAt(simTime() + par("creationTime"), new cMessage("finish"));
 }
 
 void Create::finish() {
+    EV << "Total blocks Count:            " << chainLen << endl;
+    EV << "Total messages Count:          " << messageNum << endl;
+    EV << "Total forks Count:             " << forkNum << endl;
     EV << "Total jobs Count:              " << createTime.getCount() << endl;
     EV << "Total jobs Min createtime:     " << createTime.getMin() << endl;
     EV << "Total jobs Mean createtime:    " << createTime.getMean() << endl;
