@@ -1,7 +1,7 @@
 /*
- * create-block-on-PoW.cc
+ * create-block-on-PPoS.cc
  *
- *  Created on: Nov 6, 2022
+ *  Created on: Nov 12, 2022
  *      Author: ysk722
  */
 
@@ -15,8 +15,8 @@
 #define BUFFER_MAX 4096
 #define LLAMBDA 60.0
 #define SLAMBDA 10.0
-#define WAIT 1.0
-#define DIF 25
+#define PROP_NUM 5
+#define VER_NUM 10
 #define STEP_MAX 180
 
 
@@ -35,73 +35,116 @@ struct block {
 class Create: public cSimpleModule {
 private:
     cHistogram createTime;
-    simtime_t miningTime;
+    simtime_t addingTime;
     simtime_t stepTime;
     block newBlock;
     uint32_t round;
+    uint32_t next_round;
+    uint32_t chainLen;
+    uint32_t messageNum;
+    uint32_t ownedToken;
+    uint32_t wholeToken;
     int gate_size;
-    int tH;
+    float tH;
+    float scale;
     int lead_sign;
     int bit;
-    int seed;
     vector<json> messages;
 protected:
     void initialize() override;
     void send_to_all(const string name);
+    void cleanMessage();
     void handleMessage(cMessage *msg) override;
     void publish_message(uint32_t step, int sign);
     void step12();
-    void find_leader();
+    void find_leader(uint32_t step);
     void mineBlock();
-    bool is_leader(json message, vector<json> value, int num);
+    bool is_leader(json message, vector<json> value, float num);
     void find_value(uint32_t step);
     bool is_reach_tH(json message, vector<json> valid);
     bool is_finalized();
     int  select_bit(uint32_t step);
     void coin_flipped(uint32_t step);
-    void step();
+    void next_step();
     void finish() override;
 };
 
 Define_Module(Create);
 
 void Create::initialize() {
+    chainLen = 0;
+    messageNum = 0;
     gate_size = gateSize("gate");
-    tH = 0.69 * gate_size;
+    // 1 <= scale <= 10
+    scale = 10;
+    ownedToken = getId() - 1;
+    wholeToken = 0;
+    for (int i = 1; i <= gate_size + 1; i++) { wholeToken += i; }
+    tH = (gate_size < VER_NUM) ? 0.69*gate_size*scale : 0.69*VER_NUM*scale;
+    //tH = (gate_size < VER_NUM) ? 0.69*gate_size : 0.69*VER_NUM;
+    addingTime = simTime();
     scheduleAt(simTime(), new cMessage("create"));
     round = 0;
-    seed = getId();
+    next_round = 0;
+    srand(getId());
 }
 
 void Create::send_to_all(const string name) {
     for (int i = 0; i < gate_size; i++) {
-        send(new cMessage(name.c_str()), "gate$o", i);
+        cPacket *msg = new cMessage(name.c_str());
+        msg->setByteLength(200);
+        send(msg, "gate$o", i);
+        //send(new cMessage(name.c_str()), "gate$o", i);
     }
 }
 
-void Create::handleMessage(cMessage *msg) {
+void Create::cleanMessage() {
+    for (auto itr = messages.begin(); itr != messages.end();) {
+        if ((*itr)["round"] < round) {
+            itr = messages.erase(itr);
+        } else {
+            itr++;
+        }
+    }
+}
+
+void Create::handleMessage(cPacket *msg) {
+    if (!(msg->isSelfMessage())) { messageNum++; }
     string str = string(msg->getName());
     if ("create" == str) { mineBlock();
-    } else if ("leader" == str) { find_leader();
-    } else if ("value" == str) { find_value(newBlock.step);
-    } else if ("coin" == str) { coin_flipped(newBlock.step);
-    } else if ("find" == str) {
-        createTime.collect(simTime() - miningTime);
-        miningTime = simTime();
-    } else if ("step" == str) {
-        newBlock.step++;
-        if (is_finalized() || newBlock.step > STEP_MAX) {
-            scheduleAt(simTime(), new cMessage("finish"));
-        } else { step(); }
     } else if ("finish" == str) {
+        if (round == next_round) { delete msg; return; }
+        round = next_round;
         scheduleAt(simTime(), new cMessage("create"));
-        seed = newBlock.sign;
-        round++;
+        //messages.clear();
+        cleanMessage();
         if (newBlock.step <= STEP_MAX && newBlock.sign == lead_sign) {
-            createTime.collect(simTime() - miningTime);
-            send_to_all("find");
+            createTime.collect(simTime() - addingTime);
+            addingTime = simTime();
+            chainLen++;
+            EV << "proposed" << endl;
+            json j = {{"round", round - 1}, {"step", 0}};
+            messages.push_back(j);
+            send_to_all(j.dump());
         }
-    } else { messages.push_back(json::parse(str)); }
+    } else {
+        json m = json::parse(str);
+        messages.push_back(m);
+        int step = int(m["step"]) + 1;
+        if (step == 1) {
+            createTime.collect(simTime() - addingTime);
+            addingTime = simTime();
+            chainLen++;
+        } else if (step == newBlock.step) {
+            EV << "size: " << msg->getByteLength() << endl;
+            switch (newBlock.step) {
+            case 2: find_leader(step); break;
+            case 3:
+            case 4: find_value(step); break;
+            default: coin_flipped(step); break;
+            }
+        }
+    }
     delete msg;
 }
 
@@ -121,20 +164,36 @@ block buildBlock(const block *previous, const char *contents, uint64_t length) {
 }
 
 void Create::publish_message(uint32_t step, int sign) {
+    if (getId() % 10 == 9) { return; }
+    int num = (step == 1) ? PROP_NUM : VER_NUM;
+    float dif = 256 * num * ownedToken * scale / wholeToken;
+    //float dif = 256 * num / (gate_size + 1);
     uint8_t selected[32];
     calc_sha_256(selected, &newBlock, sizeof(block));
-    if (selected[0] < DIF) {
-        json j;
+    if (static_cast<uint32_t>(selected[0]) < dif) {
+        json j = {{"round", round}, {"step", step}, {"sign", sign},
+                {"block",
+                        {"prev_hash", newBlock.previous_hash}}};
         if (step == 1) {
             EV << "proposing block" << endl;
-        }
-        if (step < 4) {
-            j = {{"round", round}, {"step", step}, {"sign", sign}};
-        } else {
-            j = {{"round", round}, {"step", step}, {"sign", sign}, {"bit", bit}};
+        } else if(step > 3) {
+            j["bit"] = bit;
         }
         messages.push_back(j);
         send_to_all(j.dump());
+    }
+}
+
+void Create::find_leader(uint32_t step) {
+    if (simTime() - stepTime < 2*SLAMBDA) { return; }
+    for (json m : messages) {
+        if (m["round"] == round && m["step"] == 1 && m["sign"] < lead_sign) {
+            lead_sign = m["sign"];
+        }
+    }
+    if (lead_sign != RAND_MAX || simTime() - stepTime >= LLAMBDA + SLAMBDA) {
+        publish_message(2, lead_sign);
+        next_step();
     }
 }
 
@@ -145,37 +204,23 @@ void Create::step12() {
     newBlock.step++;
     lead_sign = RAND_MAX;
     stepTime = simTime();
-    scheduleAt(simTime() + 2*SLAMBDA, new cMessage("leader"));
-}
-
-void Create::find_leader() {
-    for (json m : messages) {
-        if (m["round"] == round && m["step"] == 1 && m["sign"] < lead_sign) {
-            lead_sign = m["sign"];
-        }
-    }
-
-    if (lead_sign != RAND_MAX || simTime() - stepTime >= SLAMBDA + LLAMBDA) {
-        publish_message(2, lead_sign);
-        scheduleAt(simTime(), new cMessage("step"));
-    } else {
-        scheduleAt(simTime() + WAIT, new cMessage("leader"));
-    }
+    json j = {{"step", newBlock.step - 1}};
+    scheduleAt(simTime() + 2*SLAMBDA, new cMessage(j.dump().c_str()));
+    scheduleAt(simTime() + LLAMBDA + SLAMBDA, new cMessage(j.dump().c_str()));
 }
 
 void Create::mineBlock() {
-    miningTime = simTime();
-    char line_buffer[BUFFER_MAX] = "block";
+    next_round = round + 1;
+    char line_buffer[BUFFER_MAX] = "first";
     uint64_t size = strnlen(line_buffer, BUFFER_MAX) + 1;
 
     block *previous_ptr = NULL;
     newBlock = buildBlock(previous_ptr, line_buffer, size);
-    srand(seed);
     newBlock.sign = rand();
     step12();
 }
 
-bool Create::is_leader(json message, vector<json> value, int num) {
+bool Create::is_leader(json message, vector<json> value, float num) {
     int count = 0;
     for (json v : value) {
         if (message["sign"] == v["sign"]) { count++; }
@@ -205,9 +250,7 @@ void Create::find_value(uint32_t step) {
             }
         }
         publish_message(step, lead_sign);
-        scheduleAt(simTime(), new cMessage("step"));
-    } else {
-        scheduleAt(simTime() + WAIT, new cMessage("value"));
+        next_step();
     }
 }
 
@@ -215,7 +258,7 @@ bool Create::is_reach_tH(json message, vector<json> valid) {
     int count = 0;
     for (json v : valid) {
         if (message["sign"] == v["sign"]) { count++; }
-        if (count >= tH) {
+        if (tH <= count && count < tH + 1) {
             lead_sign = message["sign"];
             return true;
         }
@@ -226,8 +269,8 @@ bool Create::is_reach_tH(json message, vector<json> valid) {
 bool Create::is_finalized() {
     vector<json> valid0, valid1;
     for (json m : messages) {
-        uint32_t s = int(m["step"]) + 1;
-        if (m["round"] == round && m["bit"] == 0 && m["sign"] != RAND_MAX &&
+        int s = int(m["step"]) + 1;
+        if (m["round"] == round && m["bit"] == 0 && m["sign"] < RAND_MAX &&
                 4 < s && s <= newBlock.step && s % 3 == 2) {
             valid0.push_back(m);
             if (is_reach_tH(m, valid0)) { return true; }
@@ -241,18 +284,17 @@ bool Create::is_finalized() {
 }
 
 int Create::select_bit(uint32_t step) {
-    int lead = RAND_MAX;
-    if (step % 3 != 1) { return (bit + 1) % 2; }
-    for (json m : messages) {
-        if (m["round"] == round && m["step"] == step - 1 && m["sign"] < lead) {
-            lead = m["sign"];
-        }
-    }
-    srand(lead);
-    return rand() % 2;
+    if (step % 3 == 1) { return rand() % 2; }
+    return (bit + 1) % 2;
 }
 
 void Create::coin_flipped(uint32_t step) {
+    if (step < 5) { return; }
+    if (is_finalized()) {
+        scheduleAt(simTime(), new cMessage("finish"));
+        return;
+    }
+
     vector<json> valid;
     bool found = false;
     for (json m : messages) {
@@ -266,25 +308,34 @@ void Create::coin_flipped(uint32_t step) {
     if (found || simTime() - stepTime >= 2*SLAMBDA) {
         if (!found) { bit = select_bit(step); }
         publish_message(step, lead_sign);
-        scheduleAt(simTime(), new cMessage("step"));
-    } else {
-        if (step % 3 == 1) { bit = (bit + 1) % 2; }
-        scheduleAt(simTime() + WAIT, new cMessage("coin"));
+        next_step();
     }
 }
 
-void Create::step() {
+void Create::next_step() {
+    newBlock.step++;
+    if (newBlock.step > STEP_MAX) {
+        scheduleAt(simTime(), new cMessage("finish"));
+        return;
+    }
     EV << "step" << newBlock.step << endl;
     switch (newBlock.step % 3) {
     case 2: bit = 1; break;
     case 0: bit = 0; break;
     }
-    const char *msg = (newBlock.step < 5) ? "value" : "coin";
+    json j = {{"step", newBlock.step - 1}};
     stepTime = simTime();
-    scheduleAt(simTime(), new cMessage(msg));
+    if (newBlock.step < 5) {
+        find_value(newBlock.step);
+    } else {
+        coin_flipped(newBlock.step);
+    }
+    scheduleAt(simTime() + 2*SLAMBDA, new cMessage(j.dump().c_str()));
 }
 
 void Create::finish() {
+    EV << "Total blocks Count:            " << chainLen << endl;
+    EV << "Total messages Count:          " << messageNum << endl;
     EV << "Total jobs Count:              " << createTime.getCount() << endl;
     EV << "Total jobs Min createtime:     " << createTime.getMin() << endl;
     EV << "Total jobs Mean createtime:    " << createTime.getMean() << endl;

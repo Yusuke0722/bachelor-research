@@ -15,14 +15,18 @@
 
 package create_block_on_ppos;
 
+import inet.node.ethernet.EthernetLink;
+import inet.node.ethernet.Eth100M;
+import inet.node.ethernet.Eth1G;
+
 //
 // TODO auto-generated type
 //
 network Create_block_on_PPoS
 {
     types:
-        channel Channel extends ned.DelayChannel {
-            delay = 100ms;
+        channel Lpwa extends EthernetLink {
+            datarate = 50kbps;
         }
         simple Create
         {
@@ -31,9 +35,12 @@ network Create_block_on_PPoS
         }
 
     submodules:
-        Creator[5]: Create;
+        Creator[100]: Create;
     connections:
         for i=0..sizeof(Creator)-1, for j=0..sizeof(Creator)-1 {
-            Creator[i].gate++ <--> Channel <--> Creator[j].gate++ if i<j;
+            Creator[i].gate++ <--> Lpwa <--> Creator[j].gate++ if i<j;
+            //Creator[i].gate++ <--> Eth100M <--> Creator[j].gate++ if i<j;
+            //Creator[i].gate++ <--> Eth1G <--> Creator[j].gate++ if i<j;
+            //Creator[i].gate++ <--> Creator[j].gate++ if i<j;
         }
 }
