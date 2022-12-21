@@ -53,7 +53,6 @@ private:
 protected:
     void initialize() override;
     void send_to_all(const string name);
-    void cleanMessage();
     void handleMessage(cMessage *msg) override;
     void publish_message(uint32_t step, int sign);
     void step12();
@@ -66,6 +65,8 @@ protected:
     int  select_bit(uint32_t step);
     void coin_flipped(uint32_t step);
     void next_step();
+    void clean_message();
+    void finish_round();
     void finish() override;
 };
 
@@ -75,74 +76,41 @@ void Create::initialize() {
     chainLen = 0;
     messageNum = 0;
     gate_size = gateSize("gate");
-    // 1 <= scale <= 10
-    scale = 10;
     ownedToken = getId() - 1;
     wholeToken = 0;
     for (int i = 1; i <= gate_size + 1; i++) { wholeToken += i; }
-    tH = (gate_size < VER_NUM) ? 0.69*gate_size*scale : 0.69*VER_NUM*scale;
-    //tH = (gate_size < VER_NUM) ? 0.69*gate_size : 0.69*VER_NUM;
+    // 1 <= scale <= 10
+    //scale = 10;
+    //tH = (gate_size < VER_NUM) ? 0.69*gate_size*scale : 0.69*VER_NUM*scale;
+    tH = (gate_size < VER_NUM) ? 0.69*gate_size : 0.69*VER_NUM;
     addingTime = simTime();
-    scheduleAt(simTime(), new cMessage("create"));
     round = 0;
     next_round = 0;
     srand(getId());
+    mineBlock();
 }
 
 void Create::send_to_all(const string name) {
     for (int i = 0; i < gate_size; i++) {
-        cPacket *msg = new cMessage(name.c_str());
+        cPacket *msg = new cPacket(name.c_str());
         msg->setByteLength(200);
+        //EV << "size: " << msg->getByteLength() << endl;
         send(msg, "gate$o", i);
-        //send(new cMessage(name.c_str()), "gate$o", i);
     }
 }
 
-void Create::cleanMessage() {
-    for (auto itr = messages.begin(); itr != messages.end();) {
-        if ((*itr)["round"] < round) {
-            itr = messages.erase(itr);
-        } else {
-            itr++;
-        }
-    }
-}
-
-void Create::handleMessage(cPacket *msg) {
+void Create::handleMessage(cMessage *msg) {
     if (!(msg->isSelfMessage())) { messageNum++; }
     string str = string(msg->getName());
-    if ("create" == str) { mineBlock();
-    } else if ("finish" == str) {
-        if (round == next_round) { delete msg; return; }
-        round = next_round;
-        scheduleAt(simTime(), new cMessage("create"));
-        //messages.clear();
-        cleanMessage();
-        if (newBlock.step <= STEP_MAX && newBlock.sign == lead_sign) {
-            createTime.collect(simTime() - addingTime);
-            addingTime = simTime();
-            chainLen++;
-            EV << "proposed" << endl;
-            json j = {{"round", round - 1}, {"step", 0}};
-            messages.push_back(j);
-            send_to_all(j.dump());
-        }
-    } else {
-        json m = json::parse(str);
-        messages.push_back(m);
-        int step = int(m["step"]) + 1;
-        if (step == 1) {
-            createTime.collect(simTime() - addingTime);
-            addingTime = simTime();
-            chainLen++;
-        } else if (step == newBlock.step) {
-            EV << "size: " << msg->getByteLength() << endl;
-            switch (newBlock.step) {
-            case 2: find_leader(step); break;
-            case 3:
-            case 4: find_value(step); break;
-            default: coin_flipped(step); break;
-            }
+    json m = json::parse(str);
+    messages.push_back(m);
+    int step = int(m["step"]) + 1;
+    if (step == newBlock.step) {
+        switch (newBlock.step) {
+        case 2: find_leader(step); break;
+        case 3:
+        case 4: find_value(step); break;
+        default: coin_flipped(step); break;
         }
     }
     delete msg;
@@ -166,14 +134,12 @@ block buildBlock(const block *previous, const char *contents, uint64_t length) {
 void Create::publish_message(uint32_t step, int sign) {
     if (getId() % 10 == 9) { return; }
     int num = (step == 1) ? PROP_NUM : VER_NUM;
-    float dif = 256 * num * ownedToken * scale / wholeToken;
-    //float dif = 256 * num / (gate_size + 1);
+    //float dif = 256 * num * ownedToken * scale / wholeToken;
+    float dif = 256 * num / (gate_size + 1);
     uint8_t selected[32];
     calc_sha_256(selected, &newBlock, sizeof(block));
     if (static_cast<uint32_t>(selected[0]) < dif) {
-        json j = {{"round", round}, {"step", step}, {"sign", sign},
-                {"block",
-                        {"prev_hash", newBlock.previous_hash}}};
+        json j = {{"round", round}, {"step", step}, {"sign", sign}};
         if (step == 1) {
             EV << "proposing block" << endl;
         } else if(step > 3) {
@@ -291,7 +257,7 @@ int Create::select_bit(uint32_t step) {
 void Create::coin_flipped(uint32_t step) {
     if (step < 5) { return; }
     if (is_finalized()) {
-        scheduleAt(simTime(), new cMessage("finish"));
+        finish_round();
         return;
     }
 
@@ -315,7 +281,7 @@ void Create::coin_flipped(uint32_t step) {
 void Create::next_step() {
     newBlock.step++;
     if (newBlock.step > STEP_MAX) {
-        scheduleAt(simTime(), new cMessage("finish"));
+        finish_round();
         return;
     }
     EV << "step" << newBlock.step << endl;
@@ -331,6 +297,28 @@ void Create::next_step() {
         coin_flipped(newBlock.step);
     }
     scheduleAt(simTime() + 2*SLAMBDA, new cMessage(j.dump().c_str()));
+}
+
+void Create::clean_message() {
+    for (auto itr = messages.begin(); itr != messages.end();) {
+        if ((*itr)["round"] < round) {
+            itr = messages.erase(itr);
+        } else {
+            itr++;
+        }
+    }
+}
+
+void Create::finish_round() {
+    if (round == next_round) { return; }
+    if (newBlock.step <= STEP_MAX) {
+        createTime.collect(simTime() - addingTime);
+        addingTime = simTime();
+        chainLen++;
+    }
+    round = next_round;
+    clean_message();
+    mineBlock();
 }
 
 void Create::finish() {
