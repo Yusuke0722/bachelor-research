@@ -55,24 +55,22 @@ void Create::initialize() {
 
 void Create::send_to_all(const string name) {
     for (int i = 0; i < gate_size; i++) {
-        cPacket *msg = new cMessage(name.c_str());
+        cPacket *msg = new cPacket(name.c_str());
         msg->setByteLength(200);
+        //EV << "size: " << msg->getByteLength() << endl;
         send(msg, "gate$o", i);
-        //send(new cMessage(name.c_str()), "gate$o", i);
     }
 }
 
-void Create::handleMessage(cPacket *msg) {
+void Create::handleMessage(cMessage *msg) {
     if (!(msg->isSelfMessage())) { messageNum++; }
     if (strcmp(msg->getName(), "create") == 0) {
         mineBlock();
     } else if (strcmp(msg->getName(), "finish") == 0) {
-        //scheduleAt(simTime(), new cMessage("create"));
         if (miningTime == msg->getCreationTime()) {
             scheduleAt(simTime(), new cMessage("create"));
             createTime.collect(simTime() - addingTime);
-            json j = {{"round", chainLen},
-                    {"block", {"prev_hash", newBlock.previous_hash}}};
+            json j = {{"round", chainLen}};
             send_to_all(j.dump());
             addingTime = simTime();
             chainLen++;
@@ -81,7 +79,6 @@ void Create::handleMessage(cPacket *msg) {
         json m = json::parse(string(msg->getName()));
         int r = int(m["round"]);
         if (r != chainLen || getId() % 10 == 9) { forkNum++; return; }
-        EV << "size: " << msg->getByteLength() << endl;
         scheduleAt(simTime(), new cMessage("create"));
         createTime.collect(simTime() - addingTime);
         addingTime = simTime();
