@@ -87,7 +87,7 @@ void Create::initialize() {
     round = 0;
     next_round = 0;
     srand(getId());
-    mineBlock();
+    scheduleAt(simTime(), new cMessage("create"));
 }
 
 void Create::send_to_all(const string name) {
@@ -95,13 +95,23 @@ void Create::send_to_all(const string name) {
         cPacket *msg = new cPacket(name.c_str());
         msg->setByteLength(200);
         //EV << "size: " << msg->getByteLength() << endl;
-        send(msg, "gate$o", i);
+        simtime_t endTrsm = gate("gate$o", i)->getTransmissionChannel()->getTransmissionFinishTime();
+        if (endTrsm < simTime()) {
+            send(msg, "gate$o", i);
+        } else {
+            sendDelayed(msg, endTrsm - simTime(), "gate$o", i);
+        }
     }
 }
 
 void Create::handleMessage(cMessage *msg) {
     if (!(msg->isSelfMessage())) { messageNum++; }
     string str = string(msg->getName());
+    if (str == "create") {
+        mineBlock();
+        delete msg;
+        return;
+    }
     json m = json::parse(str);
     messages.push_back(m);
     int step = int(m["step"]) + 1;
