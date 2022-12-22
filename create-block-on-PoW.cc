@@ -58,7 +58,12 @@ void Create::send_to_all(const string name) {
         cPacket *msg = new cPacket(name.c_str());
         msg->setByteLength(200);
         //EV << "size: " << msg->getByteLength() << endl;
-        send(msg, "gate$o", i);
+        simtime_t endTrsm = gate("gate$o", i)->getTransmissionChannel()->getTransmissionFinishTime();
+        if (endTrsm < simTime()) {
+            send(msg, "gate$o", i);
+        } else {
+            sendDelayed(msg, endTrsm - simTime(), "gate$o", i);
+        }
     }
 }
 
